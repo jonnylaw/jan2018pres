@@ -1,0 +1,226 @@
+---
+title: "Bayesian Modelling of Urban Observatory Data"
+author: "Jonny Law"
+date: "10 January 2017"
+output: 
+  revealjs::revealjs_presentation:
+    theme: moon
+    controls: FALSE
+    progress: FALSE
+    css: my_presentation.css
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+library(tidyverse)
+library(latex2exp)
+library(ggthemes)
+theme_set(theme_solarized_2(light = FALSE))
+```
+
+## Environment Sensors
+
+```{r read_data, cache=TRUE}
+emote = read_csv("data/sensor_data.csv")
+```
+
+
+```{r plot_environment_sensor}
+emote %>%
+  mutate(Variable = paste0(Variable, " (", Units, ")")) %>%
+  ggplot(aes(x = Timestamp, y = Value, colour = Variable)) +
+  geom_point(size = 0.1) +
+  facet_wrap(~Variable, scales = "free_y") +
+  theme(legend.position = "none") +
+  labs(title = "Environmental Sensor Readings", subtitle = "Raw readings of sensor data at emote_1108")
+```
+
+## A Naive Model
+
+* Propose a state space model for each time series
+
+$$\begin{aligned}
+y_{ti} &= F_{ti}x_{ti} + v_{ti}, &v_{ti} &\sim \mathcal{N}(0, V_i), \\
+x_{ti} &= G_{ti}x_{t-1} + w_{ti}, &w_{ti} &\sim \mathcal{N}(0, W_i), \\
+x_0 &\sim p(x_0).
+\end{aligned}$$
+
+* Couple the models together using block diagonal matrices, for $i = 2$
+
+$$F_t = \begin{bmatrix}F_{t1} &0 \\ 0 &F_{t2}\end{bmatrix}, G_t = \begin{bmatrix}G_{t1} & 0 \\ 0 & G_{t2}\end{bmatrix}.$$
+
+## Learning Covariance Matrices
+
+> - In the Naive model the system covariance of the $i^{\textrm{th}}$ model has dimension $d_i \times d_i$
+> - If we model the four time series, the system covariance matrix contains $\sum_{i=1}^4 d_i^2$ terms
+> - *This is too large!*
+
+## Factor Analysis
+
+$$y_t = \beta^T f_t + \varepsilon_t, \quad \varepsilon_t \sim \mathcal{N}(0, \sigma_t)$$
+
+> - $y_t$ is a $p$-dimensional
+> - $\beta$ is a $k \times p$ matrix, $k << p$
+> - $f_t \sim \mathcal{N}(0, I_k)$ are latent variables
+> - $\operatorname{Var}(y_t) = \beta^\prime\beta + \sigma_t$
+
+----
+
+```{r sim_fa}
+set.seed(1)
+n = 100
+p = 6
+k = 2
+sigma = diag(runif(p))
+y = matrix(NA_real_, nrow = n, ncol = p)
+f = MASS::mvrnorm(n, mu = rep(0, k), Sigma = diag(k))
+eps = MASS::mvrnorm(n, mu = rep(0, p), Sigma = sigma)
+beta = matrix(runif(p * k), nrow = p, ncol = k)
+beta[1,1] = 1
+beta[2,2] = 1
+beta[1,2] = 0
+for (i in 1:n) {
+  y[i,] = beta %*% f[i,] + eps[i,] 
+}
+factor_sims = as.data.frame(y)
+factor_sims = cbind(factor_sims, f)
+colnames(factor_sims) = c(paste0("y", 1:6), paste0("f", 1:2))
+```
+
+<div id = "left">
+$$\beta^T = \begin{pmatrix}
+1 & 0 \\
+0.31 & 1 \\
+0.27 & 0.84 \\
+0.13 & 0.88 \\
+0.43 & 0.77 \\
+0.70 & 0.32
+\end{pmatrix}$$
+</div>
+
+<div id = "right">
+```{r plot_fa}
+factor_sims %>%
+  add_column(time = 1:nrow(factor_sims)) %>%
+  gather(key, value, contains("y")) %>%
+  ggplot(aes(x = time, y = value, colour = key)) +
+  geom_line() +
+  facet_wrap(~key) +
+  theme(legend.position = "none") +
+  labs(title = "Simulation from Factor Model")
+```
+</div>
+
+## Time Varying Variance: Stochastic Volatility Model
+
+$$\begin{aligned}
+y_t &= \varepsilon_t \exp(\alpha_t), &\varepsilon_t &\sim \mathcal{N}(0, 1) \\
+\alpha_t &= \phi (\mu - \alpha_t) + \eta_t, &\eta_t &\sim \mathcal{N}(0, \sigma_\eta). \\
+\alpha_0 &\sim p(\alpha_0).
+\end{aligned}$$
+
+> - $y_t$ is a univariate time-series observed at times $t = t_0,\dots,t_T$
+> - $\alpha_t$ is the log-volatility, modelled using an AR(1) process
+> - Write this as $y_t \sim \textrm{ISV}_T(\phi; \sigma_\eta; \mu)$
+
+----
+
+```{r sim_ar1}
+ar1 = function(n, phi, sigma, mu) {
+  x = numeric(n)
+  x[1] = rnorm(1)
+  for (i in 2:n) {
+    x[i] = x[i-1] + phi * (mu - x[i-1]) + rnorm(1) * sigma
+  }
+  x
+}
+```
+
+```{r sim_isv}
+isv = function(n, alpha) {
+  y = numeric(n)
+
+  for (i in 1:n) {
+    y[i] = rnorm(1) * exp(alpha[i])
+  }
+  data_frame(time = 1:n, y, alpha)
+} 
+n = 1000
+alpha = ar1(n, 0.05, 0.4, 0.0)
+isv_sims = isv(n, alpha)
+```
+
+```{r plot_isv}
+isv_sims %>%
+  gather(key, value, -time) %>%
+  ggplot(aes(x = time, y = value, colour = key)) +
+  geom_line() +
+  facet_wrap(~key, ncol = 1, scales = "free") +
+  theme(legend.position = "none") +
+  labs(title = "Simulation from a Stochastic Volatility Model", 
+       subtitle = TeX("$\\sigma = 1.0, \\phi = 0.05, , \\sigma_\\eta = 0.4$"))
+```
+
+## Factor Stochastic Volatility
+
+$$\begin{aligned}
+y_t &= \beta f_t + v_t, \quad v_t \sim \mathcal{N}(0, V), \\
+f_t &\sim \textrm{ISV}(\phi; \sigma_\eta; \mu).
+\end{aligned}$$
+
+> - Combine factor analysis and stochastic volatility models to learn about many related processes with non-constant variance
+> - This model has fewer parameters than the naive model
+> - Parameter learning is performed using Gibbs Sampling and Kalman Filtering
+
+----
+
+```{r factor_sv}
+fsv = function(n, v, beta, ft) {
+  k = ncol(beta)
+  p = nrow(beta)
+  y = matrix(NA_real_, ncol = p, nrow = n)
+  for (i in 1:n) {
+    y[i,] = beta %*% ft[i,] + rnorm(1, sd = sqrt(v))
+  }
+  out = cbind(1:n, y)
+}
+```
+
+```{r sim_fsv}
+ft = replicate(k, {
+  alpha = ar1(n, 0.05, 0.4, 0.0)
+  isv(n, alpha)$y
+  })
+fsv_sims = fsv(n, 0.1, beta, ft) %>% as.data.frame()
+colnames(fsv_sims) = c("time", paste0("y", 1:6))
+```
+
+```{r plot_fsv}
+fsv_sims %>%
+  gather(key, value, -time) %>%
+  ggplot(aes(x = time, y = value, colour = key)) +
+  geom_line() +
+  facet_wrap(~key) +
+  theme(legend.position = "none") +
+  labs(title = "Simulation from the Factor Stochastic Volatility Model",
+       subtitle = TeX("$\\sigma = 1.0, \\phi = 0.05, , \\sigma_\\eta = 0.4$"))
+```
+
+## Non Centered Factor SV
+
+$$\begin{aligned}
+y_t &= F_{t}\mu_{t} + \beta f_t + \varepsilon_t, &\varepsilon_t &\sim \mathcal{N}(0, \sigma) \\
+x_t &= G_tx_{t-1} + w_{t}, &w_t &\sim \mathcal{N}(0, W) \\
+f_t &\sim \textrm{ISV}(\phi; \sigma_\eta; \mu).
+\end{aligned}$$
+
+> - A DLM is used to model the mean behaviour of each time series
+> - The matrices $F_t$ and $G_t$ are block diagonal
+> - $W = \operatorname{diag}(\sigma_{w,1}, \dots, \sigma_{w, pd})$
+
+----
+
+## Thanks
+
+* Use my Scala package: Bayesian inference for D(G)LMs [git.io/dlm](https://git.io/dlm)
+* Read our paper "Composable models for online Bayesian analysis of streaming data" published in Statistics and Computing (DOI 10.1007/s11222-017-9783-1.)
