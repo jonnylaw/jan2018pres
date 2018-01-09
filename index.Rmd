@@ -5,8 +5,10 @@ date: "10 January 2017"
 output: 
   revealjs::revealjs_presentation:
     theme: moon
-    controls: FALSE
-    progress: FALSE
+    controls: false
+    progress: false
+    self_contained: false
+    reveal_plugins: ["zoom", "notes"]
     css: my_presentation.css
 ---
 
